@@ -22,7 +22,7 @@ public:
     STREAMTYPE_AUDIO, 
     STREAMTYPE_DATA, 
     STREAMTYPE_SUBTITLE, 
-    STREAMTYPE_ATTACHMENT, 
+    STREAMTYPE_ATTACHMENT 
     }; 
     void* FormatCtx;
     void* AvioCtx;

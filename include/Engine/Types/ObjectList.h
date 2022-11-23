@@ -23,8 +23,12 @@ public:
     bool            Registry = false;
     vector<Entity*> List;
     char ObjectName[256];
+    double AverageUpdateEarlyTime = 0.0;
     double AverageUpdateTime = 0.0;
+    double AverageUpdateLateTime = 0.0;
+    double AverageUpdateEarlyItemCount = 0;
     double AverageUpdateItemCount = 0;
+    double AverageUpdateLateItemCount = 0;
     double AverageRenderTime = 0.0;
     double AverageRenderItemCount = 0;
     Entity* (*SpawnFunction)() = NULL;

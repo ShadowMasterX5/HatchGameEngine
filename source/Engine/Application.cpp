@@ -50,6 +50,10 @@ extern "C" {
 }
 #endif
 
+#ifdef MSYS
+    #include <windows.h>
+#endif
+
 #if   WIN32
     Platforms Application::Platform = Platforms::Windows;
 #elif MACOSX
@@ -99,6 +103,13 @@ void        DEBUG_DrawText(char* text, float x, float y) {
 }
 
 PUBLIC STATIC void Application::Init(int argc, char* args[]) {
+#ifdef MSYS
+    AllocConsole();
+    freopen_s((FILE **)stdin, "CONIN$", "w", stdin);
+    freopen_s((FILE **)stdout, "CONOUT$", "w", stdout);
+    freopen_s((FILE **)stderr, "CONOUT$", "w", stderr);
+#endif
+
     Log::Init();
     MemoryPools::Init();
 
@@ -313,21 +324,31 @@ PUBLIC STATIC void Application::GetPerformanceSnapshot() {
         }
 
         // Object Performance Snapshot
+        double totalUpdateEarly = 0.0;
         double totalUpdate = 0.0;
+        double totalUpdateLate = 0.0;
         double totalRender = 0.0;
         Log::Print(Log::LOG_IMPORTANT, "Object Performance Snapshot:");
         for (size_t i = 0; i < ListList.size(); i++) {
             ObjectList* list = ListList[i];
             Log::Print(Log::LOG_INFO, "Object \"%s\":\n"
-                "           - Avg Update %6.1f mcs (Total %6.1f mcs, Count %d)\n"
-                "           - Avg Render %6.1f mcs (Total %6.1f mcs, Count %d)", list->ObjectName,
+                "           - Avg Update Early %6.1f mcs (Total %6.1f mcs, Count %d)\n"
+                "           - Avg Update       %6.1f mcs (Total %6.1f mcs, Count %d)\n"
+                "           - Avg Update Late  %6.1f mcs (Total %6.1f mcs, Count %d)\n"
+                "           - Avg Render       %6.1f mcs (Total %6.1f mcs, Count %d)", list->ObjectName,
+                list->AverageUpdateEarlyTime * 1000.0, list->AverageUpdateEarlyTime * list->AverageUpdateEarlyItemCount * 1000.0, (int)list->AverageUpdateEarlyItemCount,
                 list->AverageUpdateTime * 1000.0, list->AverageUpdateTime * list->AverageUpdateItemCount * 1000.0, (int)list->AverageUpdateItemCount,
+                list->AverageUpdateLateTime * 1000.0, list->AverageUpdateLateTime * list->AverageUpdateLateItemCount * 1000.0, (int)list->AverageUpdateLateItemCount,
                 list->AverageRenderTime * 1000.0, list->AverageRenderTime * list->AverageRenderItemCount * 1000.0, (int)list->AverageRenderItemCount);
 
+            totalUpdateEarly += list->AverageUpdateEarlyTime * list->AverageUpdateEarlyItemCount * 1000.0;
             totalUpdate += list->AverageUpdateTime * list->AverageUpdateItemCount * 1000.0;
+            totalUpdateLate += list->AverageUpdateLateTime * list->AverageUpdateLateItemCount * 1000.0;
             totalRender += list->AverageRenderTime * list->AverageRenderItemCount * 1000.0;
         }
+        Log::Print(Log::LOG_WARN, "Total Update Early: %8.3f mcs / %1.3f ms", totalUpdateEarly, totalUpdateEarly / 1000.0);
         Log::Print(Log::LOG_WARN, "Total Update: %8.3f mcs / %1.3f ms", totalUpdate, totalUpdate / 1000.0);
+        Log::Print(Log::LOG_WARN, "Total Update Late: %8.3f mcs / %1.3f ms", totalUpdateLate, totalUpdateLate / 1000.0);
         Log::Print(Log::LOG_WARN, "Total Render: %8.3f mcs / %1.3f ms", totalRender, totalRender / 1000.0);
 
         Log::Print(Log::LOG_IMPORTANT, "Garbage Size:");
@@ -467,7 +488,6 @@ PUBLIC STATIC void Application::PollEvents() {
                             Scene::Init();
                             if (*StartingScene)
                                 Scene::LoadScene(StartingScene);
-                            // Scene::LoadTileCollisions("Scenes/TileCol.bin");
                             Scene::Restart();
                             Application::UpdateWindowTitle();
                         }
@@ -530,7 +550,6 @@ PUBLIC STATIC void Application::PollEvents() {
                             memcpy(Scene::CurrentScene, temp, 256);
                             Scene::LoadScene(Scene::CurrentScene);
 
-                            // Scene::LoadTileCollisions("Scenes/TileCol.bin");
                             Scene::Restart();
                             Application::UpdateWindowTitle();
                         }
@@ -938,26 +957,27 @@ PUBLIC STATIC void Application::Run(int argc, char* args[]) {
     Application::Settings->GetInteger("dev", "fastforward", &UpdatesPerFastForward);
 
     Scene::Init();
-    if (argc > 1 && !!StringUtils::StrCaseStr(args[1], ".tmx")) {
-        char cwd[512];
-        if (Directory::GetCurrentWorkingDirectory(cwd, sizeof(cwd))) {
-            if (!!StringUtils::StrCaseStr(args[1], "/Resources/") || !!StringUtils::StrCaseStr(args[1], "\\Resources\\")) {
-                char* tmxPath = args[1] + strlen(cwd) + strlen("/Resources/");
-                for (char* i = tmxPath; *i; i++) {
-                    if (*i == '\\')
-                        *i = '/';
-                }
-                Scene::LoadScene(tmxPath);
+
+    if (argc > 1) {
+        char* pathStart = StringUtils::StrCaseStr(args[1], "/Resources/");
+        if (pathStart == NULL)
+            pathStart = StringUtils::StrCaseStr(args[1], "\\Resources\\");
+
+        if (pathStart) {
+            char* tmxPath = pathStart + strlen("/Resources/");
+            for (char* i = tmxPath; *i; i++) {
+                if (*i == '\\')
+                    *i = '/';
             }
-            else {
-                Log::Print(Log::LOG_WARN, "Map file \"%s\" not inside Resources folder!", args[1]);
-            }
+            Scene::LoadScene(tmxPath);
+        }
+        else {
+            Log::Print(Log::LOG_WARN, "Map file \"%s\" not inside Resources folder!", args[1]);
         }
     }
     else if (*StartingScene) {
         Scene::LoadScene(StartingScene);
     }
-    // Scene::LoadTileCollisions("Scenes/TileCol.bin");
 
     Scene::Restart();
     Application::UpdateWindowTitle();
@@ -1026,6 +1046,10 @@ PUBLIC STATIC void Application::Cleanup() {
     SDL_Quit();
 
     // Memory::PrintLeak();
+
+#ifdef MSYS
+    FreeConsole();
+#endif
 }
 
 PUBLIC STATIC void Application::LoadGameConfig() {

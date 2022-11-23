@@ -474,6 +474,35 @@ PUBLIC STATIC void     Graphics::SetBlendColor(float r, float g, float b, float 
 	Graphics::BlendColors[3] = a;
     Graphics::GfxFunctions->SetBlendColor(r, g, b, a);
 }
+PUBLIC STATIC void     Graphics::SetBlendMode(int blendMode) {
+    Graphics::BlendMode = blendMode;
+    switch (blendMode) {
+        case BlendMode_NORMAL:
+            Graphics::SetBlendMode(
+                BlendFactor_SRC_ALPHA, BlendFactor_INV_SRC_ALPHA,
+                BlendFactor_SRC_ALPHA, BlendFactor_INV_SRC_ALPHA);
+            break;
+        case BlendMode_ADD:
+            Graphics::SetBlendMode(
+                BlendFactor_SRC_ALPHA, BlendFactor_ONE,
+                BlendFactor_SRC_ALPHA, BlendFactor_ONE);
+            break;
+        case BlendMode_MAX:
+            Graphics::SetBlendMode(
+                BlendFactor_SRC_ALPHA, BlendFactor_INV_SRC_COLOR,
+                BlendFactor_SRC_ALPHA, BlendFactor_INV_SRC_COLOR);
+            break;
+        case BlendMode_SUBTRACT:
+            Graphics::SetBlendMode(
+                BlendFactor_ZERO, BlendFactor_INV_SRC_COLOR,
+                BlendFactor_SRC_ALPHA, BlendFactor_INV_SRC_ALPHA);
+            break;
+        default:
+            Graphics::SetBlendMode(
+                BlendFactor_SRC_ALPHA, BlendFactor_INV_SRC_ALPHA,
+                BlendFactor_SRC_ALPHA, BlendFactor_INV_SRC_ALPHA);
+    }
+}
 PUBLIC STATIC void     Graphics::SetBlendMode(int srcC, int dstC, int srcA, int dstA) {
     Graphics::GfxFunctions->SetBlendMode(srcC, dstC, srcA, dstA);
 }
@@ -830,7 +859,7 @@ PUBLIC STATIC void     Graphics::MakeFrameBufferID(ISprite* sprite, AnimFrame* f
 }
 
 PUBLIC STATIC bool     Graphics::SpriteRangeCheck(ISprite* sprite, int animation, int frame) {
-	#ifdef DEBUG
+	//#ifdef DEBUG
 	if (!sprite) return true;
 	if (animation < 0 || animation >= (int)sprite->Animations.size()) {
 		BytecodeObjectManager::Threads[0].ThrowRuntimeError(false, "Animation %d does not exist in sprite %s!", animation, sprite->Filename);
@@ -840,6 +869,6 @@ PUBLIC STATIC bool     Graphics::SpriteRangeCheck(ISprite* sprite, int animation
 		BytecodeObjectManager::Threads[0].ThrowRuntimeError(false, "Frame %d in animation \"%s\" does not exist in sprite %s!", frame, sprite->Animations[animation].Name, sprite->Filename);
 		return true;
 	}
-	#endif
+	//#endif
 	return false;
 }

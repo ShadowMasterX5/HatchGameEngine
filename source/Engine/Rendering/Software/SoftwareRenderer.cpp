@@ -16,6 +16,8 @@ public:
     static Uint32            PaletteColors[MAX_PALETTE_COUNT][0x100];
     static Uint8             PaletteIndexLines[MAX_FRAMEBUFFER_HEIGHT];
     static TileScanLine      TileScanLineBuffer[MAX_FRAMEBUFFER_HEIGHT];
+    static Sint32            SpriteDeformBuffer[MAX_FRAMEBUFFER_HEIGHT];
+    static bool              UseSpriteDeform;
 };
 #endif
 
@@ -35,10 +37,11 @@ Uint32            SoftwareRenderer::CurrentArrayBuffer = 0;
 Uint32            SoftwareRenderer::PaletteColors[MAX_PALETTE_COUNT][0x100];
 Uint8             SoftwareRenderer::PaletteIndexLines[MAX_FRAMEBUFFER_HEIGHT];
 TileScanLine      SoftwareRenderer::TileScanLineBuffer[MAX_FRAMEBUFFER_HEIGHT];
+Sint32            SoftwareRenderer::SpriteDeformBuffer[MAX_FRAMEBUFFER_HEIGHT];
+bool              SoftwareRenderer::UseSpriteDeform = false;
 
 int Alpha = 0xFF;
 int BlendFlag = 0;
-int DivideBy3Table[0x100];
 
 struct SWTextureData {
 	Uint32*           Palette = NULL;
@@ -298,32 +301,8 @@ int* FilterTable = NULL;
 // Initialization and disposal functions
 PUBLIC STATIC void     SoftwareRenderer::Init() {
     SoftwareRenderer::BackendFunctions.Init();
-    // PixelFunction = SetPixelNormal;
-	// FilterFunction[0] = FilterNone;
-	// FilterFunction[1] = FilterNone;
-	// FilterFunction[2] = FilterNone;
-	// FilterFunction[3] = FilterNone;
-    //
-	// Deform = (Sint8*)Memory::TrackedCalloc("SoftwareRenderer::DeformMap", Application::HEIGHT, 1);
-    //
-	// Clip[0] = 0;
-	// Clip[1] = 0;
-	// Clip[2] = Application::WIDTH;
-	// Clip[3] = Application::HEIGHT;
-    // ClipSet = false;
-    //
-	// for (int i = 0; i < 0x100; i++)
-	// 	DivideBy3Table[i] = i / 3;
-    //
-	// FrameBufferSize = Application::WIDTH * Application::HEIGHT;
-	// FrameBuffer = (Uint32*)Memory::TrackedCalloc("SoftwareRenderer::FrameBuffer", FrameBufferSize, sizeof(Uint32));
-	// FrameBufferStride = Application::WIDTH;
-    //
-	// ResourceStream* res;
-    // if ((res = ResourceStream::New("Sprites/UI/DevFont.bin"))) {
-    // 	res->ReadBytes(BitmapFont, 0x400);
-    //     res->Close();
-    // }
+
+    UseSpriteDeform = false;
 }
 PUBLIC STATIC Uint32   SoftwareRenderer::GetWindowFlags() {
     return Graphics::Internal.GetWindowFlags();
@@ -530,6 +509,16 @@ PUBLIC STATIC void     SoftwareRenderer::Present() {
 
 }
 
+enum BlendFlags {
+    BlendFlag_OPAQUE = 0,
+    BlendFlag_TRANSPARENT,
+    BlendFlag_ADDITIVE,
+    BlendFlag_SUBTRACT,
+    BlendFlag_MATCH_EQUAL,
+    BlendFlag_MATCH_NOT_EQUAL,
+    BlendFlag_FILTER,
+};
+
 // Draw mode setting functions
 PUBLIC STATIC void     SoftwareRenderer::SetBlendColor(float r, float g, float b, float a) {
     ColR = (int)(r * 0xFF);
@@ -541,28 +530,28 @@ PUBLIC STATIC void     SoftwareRenderer::SetBlendColor(float r, float g, float b
 
     if (a >= 1.0) {
         Alpha = 0xFF;
-        // BlendFlag = 0;
+        // BlendFlag = BlendFlag_OPAQUE;
         return;
     }
     Alpha = (int)(a * 0xFF);
-    // BlendFlag = 1;
+    // BlendFlag = BlendFlag_TRANSPARENT;
 }
 PUBLIC STATIC void     SoftwareRenderer::SetBlendMode(int srcC, int dstC, int srcA, int dstA) {
     switch (Graphics::BlendMode) {
         case BlendMode_NORMAL:
-            BlendFlag = 1;
+            BlendFlag = BlendFlag_TRANSPARENT;
             break;
         case BlendMode_ADD:
-            BlendFlag = 2;
+            BlendFlag = BlendFlag_ADDITIVE;
             break;
         case BlendMode_SUBTRACT:
-            BlendFlag = 3;
+            BlendFlag = BlendFlag_SUBTRACT;
             break;
         case BlendMode_MATCH_EQUAL:
-            BlendFlag = 4;
+            BlendFlag = BlendFlag_MATCH_EQUAL;
             break;
         case BlendMode_MATCH_NOT_EQUAL:
-            BlendFlag = 5;
+            BlendFlag = BlendFlag_MATCH_NOT_EQUAL;
             break;
     }
 }
@@ -627,16 +616,6 @@ PUBLIC STATIC void     SoftwareRenderer::Restore() {
 
 }
 
-enum BlendFlags {
-    BlendFlag_OPAQUE = 0,
-    BlendFlag_TRANSPARENT,
-    BlendFlag_ADDITIVE,
-    BlendFlag_SUBTRACT,
-    BlendFlag_MATCH_EQUAL,
-    BlendFlag_MATCH_NOT_EQUAL,
-    BlendFlag_FILTER,
-};
-
 #define SRC_CHECK false
 #define GET_CLIP_BOUNDS(x1, y1, x2, y2) \
     if (Graphics::CurrentClip.Enabled) { \
@@ -654,12 +633,12 @@ enum BlendFlags {
 #define ALTER_BLENDFLAG_AND_OPACITY(blendFlag, opacity) \
     if (FilterTable != &FilterColor[0]) \
         blendFlag = BlendFlag_FILTER; \
-    if (opacity == 0 && blendFlag != BlendFlag_OPAQUE) \
+    if (opacity == 0 && (blendFlag != BlendFlag_OPAQUE && blendFlag != BlendFlag_FILTER)) \
         return; \
     if (opacity != 0 && blendFlag == BlendFlag_OPAQUE) \
         blendFlag = BlendFlag_TRANSPARENT; \
     if (opacity == 0xFF && blendFlag == BlendFlag_TRANSPARENT) \
-        blendFlag = 0;
+        blendFlag = BlendFlag_OPAQUE;
 
 // Filterless versions
 #define GET_R(color) ((color >> 16) & 0xFF)
@@ -1442,14 +1421,8 @@ PUBLIC STATIC void     SoftwareRenderer::ArrayBuffer_DrawFinish(Uint32 arrayBuff
 
     int blendFlag = BlendFlag;
     int opacity = Alpha;
-    if (FilterTable != &FilterColor[0])
-        blendFlag = 6;
-    if (Alpha == 0 && blendFlag != 0)
-        return;
-    if (Alpha != 0 && blendFlag == 0)
-        blendFlag = 1;
-    if (Alpha == 0xFF && blendFlag == 1)
-        blendFlag = 0;
+
+    ALTER_BLENDFLAG_AND_OPACITY(blendFlag, opacity);
 
     arrayBuffer = &ArrayBuffers[arrayBufferIndex];
     if (!arrayBuffer->Initialized)
@@ -2509,17 +2482,21 @@ void DrawSpriteImage(Texture* texture, int x, int y, int w, int h, int sx, int s
     int dst_x2 = x + w;
     int dst_y2 = y + h;
 
-    if (Alpha != 0 && blendFlag == 0)
-        blendFlag = 1;
+    if (Alpha != 0 && blendFlag == BlendFlag_OPAQUE)
+        blendFlag = BlendFlag_TRANSPARENT;
     if (!Graphics::TextureBlend)
-        blendFlag = 0;
+        blendFlag = BlendFlag_OPAQUE;
+
+    int clip_x1 = 0,
+        clip_y1 = 0,
+        clip_x2 = 0,
+        clip_y2 = 0;
 
     if (Graphics::CurrentClip.Enabled) {
-        int
-            clip_x1 = Graphics::CurrentClip.X,
-            clip_y1 = Graphics::CurrentClip.Y,
-            clip_x2 = Graphics::CurrentClip.X + Graphics::CurrentClip.Width,
-            clip_y2 = Graphics::CurrentClip.Y + Graphics::CurrentClip.Height;
+        clip_x1 = Graphics::CurrentClip.X;
+        clip_y1 = Graphics::CurrentClip.Y;
+        clip_x2 = Graphics::CurrentClip.X + Graphics::CurrentClip.Width;
+        clip_y2 = Graphics::CurrentClip.Y + Graphics::CurrentClip.Height;
 
         if (dst_x2 > clip_x2)
             dst_x2 = clip_x2;
@@ -2538,9 +2515,9 @@ void DrawSpriteImage(Texture* texture, int x, int y, int w, int h, int sx, int s
         }
     }
     else {
-        int
-            clip_x2 = (int)Graphics::CurrentRenderTarget->Width,
-            clip_y2 = (int)Graphics::CurrentRenderTarget->Height;
+        clip_x2 = (int)Graphics::CurrentRenderTarget->Width,
+        clip_y2 = (int)Graphics::CurrentRenderTarget->Height;
+
         if (dst_x2 > clip_x2)
             dst_x2 = clip_x2;
         if (dst_y2 > clip_y2)
@@ -2563,6 +2540,18 @@ void DrawSpriteImage(Texture* texture, int x, int y, int w, int h, int sx, int s
     if (dst_y1 >= dst_y2)
         return;
 
+    #define DEFORM_X { \
+        dst_x += *deformValues; \
+        if (dst_x < clip_x1) { \
+            dst_x -= *deformValues; \
+            continue; \
+        } \
+        if (dst_x >= clip_x2) { \
+            dst_x -= *deformValues; \
+            continue; \
+        } \
+    }
+
     #define DRAW_PLACEPIXEL(pixelFunction) \
         if ((color = srcPxLine[src_x]) & 0xFF000000U) \
             pixelFunction(&color, &dstPxLine[dst_x], opacity, multTableAt, multSubTableAt);
@@ -2570,41 +2559,74 @@ void DrawSpriteImage(Texture* texture, int x, int y, int w, int h, int sx, int s
         if ((color = srcPxLine[src_x])) \
             pixelFunction(&index[color], &dstPxLine[dst_x], opacity, multTableAt, multSubTableAt);
 
-    #define DRAW_NOFLIP(pixelFunction, placePixelMacro) for (int dst_y = dst_y1; dst_y < dst_y2; dst_y++) { \
+    #define DRAW_NOFLIP(pixelFunction, placePixelMacro) \
+    for (int dst_y = dst_y1; dst_y < dst_y2; dst_y++) { \
         srcPxLine = srcPx + src_strideY; \
         dstPxLine = dstPx + dst_strideY; \
         index = &SoftwareRenderer::PaletteColors[SoftwareRenderer::PaletteIndexLines[dst_y]][0]; \
-        for (int dst_x = dst_x1, src_x = src_x1; dst_x < dst_x2; dst_x++, src_x++) { \
-            placePixelMacro(pixelFunction) \
-        } \
-        dst_strideY += dstStride; src_strideY += srcStride; \
+        if (SoftwareRenderer::UseSpriteDeform) \
+            for (int dst_x = dst_x1, src_x = src_x1; dst_x < dst_x2; dst_x++, src_x++) { \
+                DEFORM_X; \
+                placePixelMacro(pixelFunction) \
+                dst_x -= *deformValues;\
+            } \
+        else \
+            for (int dst_x = dst_x1, src_x = src_x1; dst_x < dst_x2; dst_x++, src_x++) { \
+                placePixelMacro(pixelFunction) \
+            } \
+        \
+        dst_strideY += dstStride; src_strideY += srcStride; deformValues++; \
     }
     #define DRAW_FLIPX(pixelFunction, placePixelMacro) for (int dst_y = dst_y1; dst_y < dst_y2; dst_y++) { \
         srcPxLine = srcPx + src_strideY; \
         dstPxLine = dstPx + dst_strideY; \
         index = &SoftwareRenderer::PaletteColors[SoftwareRenderer::PaletteIndexLines[dst_y]][0]; \
-        for (int dst_x = dst_x1, src_x = src_x2; dst_x < dst_x2; dst_x++, src_x--) { \
-            placePixelMacro(pixelFunction) \
-        } \
+        if (SoftwareRenderer::UseSpriteDeform) \
+            for (int dst_x = dst_x1, src_x = src_x2; dst_x < dst_x2; dst_x++, src_x--) { \
+                DEFORM_X; \
+                placePixelMacro(pixelFunction) \
+                dst_x -= *deformValues;\
+            } \
+        else \
+            for (int dst_x = dst_x1, src_x = src_x2; dst_x < dst_x2; dst_x++, src_x--) { \
+                placePixelMacro(pixelFunction) \
+            } \
         dst_strideY += dstStride; src_strideY += srcStride; \
+        deformValues++; \
     }
     #define DRAW_FLIPY(pixelFunction, placePixelMacro) for (int dst_y = dst_y1; dst_y < dst_y2; dst_y++) { \
         srcPxLine = srcPx + src_strideY; \
         dstPxLine = dstPx + dst_strideY; \
         index = &SoftwareRenderer::PaletteColors[SoftwareRenderer::PaletteIndexLines[dst_y]][0]; \
-        for (int dst_x = dst_x1, src_x = src_x1; dst_x < dst_x2; dst_x++, src_x++) { \
-            placePixelMacro(pixelFunction) \
-        } \
+        if (SoftwareRenderer::UseSpriteDeform) \
+            for (int dst_x = dst_x1, src_x = src_x1; dst_x < dst_x2; dst_x++, src_x++) { \
+                DEFORM_X; \
+                placePixelMacro(pixelFunction) \
+                dst_x -= *deformValues;\
+            } \
+        else \
+            for (int dst_x = dst_x1, src_x = src_x1; dst_x < dst_x2; dst_x++, src_x++) { \
+                placePixelMacro(pixelFunction) \
+            } \
         dst_strideY += dstStride; src_strideY -= srcStride; \
+        deformValues++; \
     }
     #define DRAW_FLIPXY(pixelFunction, placePixelMacro) for (int dst_y = dst_y1; dst_y < dst_y2; dst_y++) { \
         srcPxLine = srcPx + src_strideY; \
         dstPxLine = dstPx + dst_strideY; \
         index = &SoftwareRenderer::PaletteColors[SoftwareRenderer::PaletteIndexLines[dst_y]][0]; \
-        for (int dst_x = dst_x1, src_x = src_x2; dst_x < dst_x2; dst_x++, src_x--) { \
-            placePixelMacro(pixelFunction) \
-        } \
+        if (SoftwareRenderer::UseSpriteDeform) \
+            for (int dst_x = dst_x1, src_x = src_x2; dst_x < dst_x2; dst_x++, src_x--) { \
+                DEFORM_X; \
+                placePixelMacro(pixelFunction) \
+                dst_x -= *deformValues;\
+            } \
+        else \
+            for (int dst_x = dst_x1, src_x = src_x2; dst_x < dst_x2; dst_x++, src_x--) { \
+                placePixelMacro(pixelFunction) \
+            } \
         dst_strideY += dstStride; src_strideY -= srcStride; \
+        deformValues++; \
     }
 
     #define BLENDFLAGS(flipMacro, placePixelMacro) \
@@ -2637,6 +2659,8 @@ void DrawSpriteImage(Texture* texture, int x, int y, int w, int h, int sx, int s
     int dst_strideY, src_strideY;
     int* multTableAt = &MultTable[opacity << 8];
     int* multSubTableAt = &MultSubTable[opacity << 8];
+    Sint32* deformValues = &SoftwareRenderer::SpriteDeformBuffer[dst_y1];
+
     if (Graphics::UsePalettes && texture->Paletted) {
         switch (flipFlag) {
             case 0:
@@ -2733,10 +2757,10 @@ void DrawSpriteImageTransformed(Texture* texture, int x, int y, int offx, int of
     int dst_x2 = _x2;
     int dst_y2 = _y2;
 
-    if (Alpha != 0 && blendFlag == 0)
-        blendFlag = 1;
+    if (Alpha != 0 && blendFlag == BlendFlag_OPAQUE)
+        blendFlag = BlendFlag_TRANSPARENT;
     if (!Graphics::TextureBlend)
-        blendFlag = 0;
+        blendFlag = BlendFlag_OPAQUE;
 
     #define SET_MIN(a, b) if (a > b) a = b;
     #define SET_MAX(a, b) if (a < b) a = b;
@@ -2778,12 +2802,16 @@ void DrawSpriteImageTransformed(Texture* texture, int x, int y, int offx, int of
     dst_x2 += x + 1;
     dst_y2 += y + 1;
 
+    int clip_x1 = 0,
+        clip_y1 = 0,
+        clip_x2 = 0,
+        clip_y2 = 0;
+
     if (Graphics::CurrentClip.Enabled) {
-        int
-            clip_x1 = Graphics::CurrentClip.X,
-            clip_y1 = Graphics::CurrentClip.Y,
-            clip_x2 = Graphics::CurrentClip.X + Graphics::CurrentClip.Width,
-            clip_y2 = Graphics::CurrentClip.Y + Graphics::CurrentClip.Height;
+        clip_x1 = Graphics::CurrentClip.X,
+        clip_y1 = Graphics::CurrentClip.Y,
+        clip_x2 = Graphics::CurrentClip.X + Graphics::CurrentClip.Width,
+        clip_y2 = Graphics::CurrentClip.Y + Graphics::CurrentClip.Height;
 
         if (dst_x1 < clip_x1)
             dst_x1 = clip_x1;
@@ -2795,9 +2823,9 @@ void DrawSpriteImageTransformed(Texture* texture, int x, int y, int offx, int of
             dst_y2 = clip_y2;
     }
     else {
-        int
-            clip_x2 = (int)Graphics::CurrentRenderTarget->Width,
-            clip_y2 = (int)Graphics::CurrentRenderTarget->Height;
+        clip_x2 = (int)Graphics::CurrentRenderTarget->Width,
+        clip_y2 = (int)Graphics::CurrentRenderTarget->Height;
+
         if (dst_x1 < 0)
             dst_x1 = 0;
         if (dst_y1 < 0)
@@ -2813,6 +2841,18 @@ void DrawSpriteImageTransformed(Texture* texture, int x, int y, int offx, int of
     if (dst_y1 >= dst_y2)
         return;
 
+    #define DEFORM_X { \
+        dst_x += *deformValues; \
+        if (dst_x < clip_x1) { \
+            dst_x -= *deformValues; \
+            continue; \
+        } \
+        if (dst_x >= clip_x2) { \
+            dst_x -= *deformValues; \
+            continue; \
+        } \
+    }
+
     #define DRAW_PLACEPIXEL(pixelFunction) \
         if ((color = srcPx[src_x + src_strideY]) & 0xFF000000U) \
             pixelFunction(&color, &dstPxLine[dst_x], opacity, multTableAt, multSubTableAt);
@@ -2825,68 +2865,124 @@ void DrawSpriteImageTransformed(Texture* texture, int x, int y, int offx, int of
         i_y_rcos =  i_y * rcos; \
         dstPxLine = dstPx + dst_strideY; \
         index = &SoftwareRenderer::PaletteColors[SoftwareRenderer::PaletteIndexLines[dst_y]][0]; \
-        for (int dst_x = dst_x1, i_x = dst_x1 - x; dst_x < dst_x2; dst_x++, i_x++) { \
-            src_x = (i_x * rcos + i_y_rsin) >> 9; \
-            src_y = (i_x * rsin + i_y_rcos) >> 9; \
-            if (src_x >= _x1 && src_y >= _y1 && \
-                src_x <  _x2 && src_y <  _y2) { \
-                src_x       = (src_x1 + (src_x - _x1) * sw / w); \
-                src_strideY = (src_y1 + (src_y - _y1) * sh / h) * srcStride; \
-                placePixelMacro(pixelFunction); \
+        if (SoftwareRenderer::UseSpriteDeform) \
+            for (int dst_x = dst_x1, i_x = dst_x1 - x; dst_x < dst_x2; dst_x++, i_x++) { \
+                DEFORM_X; \
+                src_x = (i_x * rcos + i_y_rsin) >> 9; \
+                src_y = (i_x * rsin + i_y_rcos) >> 9; \
+                if (src_x >= _x1 && src_y >= _y1 && \
+                    src_x <  _x2 && src_y <  _y2) { \
+                    src_x       = (src_x1 + (src_x - _x1) * sw / w); \
+                    src_strideY = (src_y1 + (src_y - _y1) * sh / h) * srcStride; \
+                    placePixelMacro(pixelFunction); \
+                } \
+                dst_x -= *deformValues; \
             } \
-        } \
-        dst_strideY += dstStride; \
+        else \
+            for (int dst_x = dst_x1, i_x = dst_x1 - x; dst_x < dst_x2; dst_x++, i_x++) { \
+                src_x = (i_x * rcos + i_y_rsin) >> 9; \
+                src_y = (i_x * rsin + i_y_rcos) >> 9; \
+                if (src_x >= _x1 && src_y >= _y1 && \
+                    src_x <  _x2 && src_y <  _y2) { \
+                    src_x       = (src_x1 + (src_x - _x1) * sw / w); \
+                    src_strideY = (src_y1 + (src_y - _y1) * sh / h) * srcStride; \
+                    placePixelMacro(pixelFunction); \
+                } \
+            } \
+        dst_strideY += dstStride; deformValues++; \
     }
     #define DRAW_FLIPX(pixelFunction, placePixelMacro) for (int dst_y = dst_y1, i_y = dst_y1 - y; dst_y < dst_y2; dst_y++, i_y++) { \
         i_y_rsin = -i_y * rsin; \
         i_y_rcos =  i_y * rcos; \
         dstPxLine = dstPx + dst_strideY; \
         index = &SoftwareRenderer::PaletteColors[SoftwareRenderer::PaletteIndexLines[dst_y]][0]; \
-        for (int dst_x = dst_x1, i_x = dst_x1 - x; dst_x < dst_x2; dst_x++, i_x++) { \
-            src_x = (i_x * rcos + i_y_rsin) >> 9; \
-            src_y = (i_x * rsin + i_y_rcos) >> 9; \
-            if (src_x >= _x1 && src_y >= _y1 && \
-                src_x <  _x2 && src_y <  _y2) { \
-                src_x       = (src_x2 - (src_x - _x1) * sw / w); \
-                src_strideY = (src_y1 + (src_y - _y1) * sh / h) * srcStride; \
-                placePixelMacro(pixelFunction); \
+        if (SoftwareRenderer::UseSpriteDeform) \
+            for (int dst_x = dst_x1, i_x = dst_x1 - x; dst_x < dst_x2; dst_x++, i_x++) { \
+                DEFORM_X; \
+                src_x = (i_x * rcos + i_y_rsin) >> 9; \
+                src_y = (i_x * rsin + i_y_rcos) >> 9; \
+                if (src_x >= _x1 && src_y >= _y1 && \
+                    src_x <  _x2 && src_y <  _y2) { \
+                    src_x       = (src_x2 - (src_x - _x1) * sw / w); \
+                    src_strideY = (src_y1 + (src_y - _y1) * sh / h) * srcStride; \
+                    placePixelMacro(pixelFunction); \
+                } \
+                dst_x -= *deformValues; \
             } \
-        } \
-        dst_strideY += dstStride; \
+        else \
+            for (int dst_x = dst_x1, i_x = dst_x1 - x; dst_x < dst_x2; dst_x++, i_x++) { \
+                src_x = (i_x * rcos + i_y_rsin) >> 9; \
+                src_y = (i_x * rsin + i_y_rcos) >> 9; \
+                if (src_x >= _x1 && src_y >= _y1 && \
+                    src_x <  _x2 && src_y <  _y2) { \
+                    src_x       = (src_x2 - (src_x - _x1) * sw / w); \
+                    src_strideY = (src_y1 + (src_y - _y1) * sh / h) * srcStride; \
+                    placePixelMacro(pixelFunction); \
+                } \
+            } \
+        dst_strideY += dstStride; deformValues++; \
     }
     #define DRAW_FLIPY(pixelFunction, placePixelMacro) for (int dst_y = dst_y1, i_y = dst_y1 - y; dst_y < dst_y2; dst_y++, i_y++) { \
         i_y_rsin = -i_y * rsin; \
         i_y_rcos =  i_y * rcos; \
         dstPxLine = dstPx + dst_strideY; \
         index = &SoftwareRenderer::PaletteColors[SoftwareRenderer::PaletteIndexLines[dst_y]][0]; \
-        for (int dst_x = dst_x1, i_x = dst_x1 - x; dst_x < dst_x2; dst_x++, i_x++) { \
-            src_x = (i_x * rcos + i_y_rsin) >> 9; \
-            src_y = (i_x * rsin + i_y_rcos) >> 9; \
-            if (src_x >= _x1 && src_y >= _y1 && \
-                src_x <  _x2 && src_y <  _y2) { \
-                src_x       = (src_x1 + (src_x - _x1) * sw / w); \
-                src_strideY = (src_y2 - (src_y - _y1) * sh / h) * srcStride; \
-                placePixelMacro(pixelFunction); \
+        if (SoftwareRenderer::UseSpriteDeform) \
+            for (int dst_x = dst_x1, i_x = dst_x1 - x; dst_x < dst_x2; dst_x++, i_x++) { \
+                DEFORM_X; \
+                src_x = (i_x * rcos + i_y_rsin) >> 9; \
+                src_y = (i_x * rsin + i_y_rcos) >> 9; \
+                if (src_x >= _x1 && src_y >= _y1 && \
+                    src_x <  _x2 && src_y <  _y2) { \
+                    src_x       = (src_x1 + (src_x - _x1) * sw / w); \
+                    src_strideY = (src_y2 - (src_y - _y1) * sh / h) * srcStride; \
+                    placePixelMacro(pixelFunction); \
+                } \
+                dst_x -= *deformValues; \
             } \
-        } \
-        dst_strideY += dstStride; \
+        else \
+            for (int dst_x = dst_x1, i_x = dst_x1 - x; dst_x < dst_x2; dst_x++, i_x++) { \
+                src_x = (i_x * rcos + i_y_rsin) >> 9; \
+                src_y = (i_x * rsin + i_y_rcos) >> 9; \
+                if (src_x >= _x1 && src_y >= _y1 && \
+                    src_x <  _x2 && src_y <  _y2) { \
+                    src_x       = (src_x1 + (src_x - _x1) * sw / w); \
+                    src_strideY = (src_y2 - (src_y - _y1) * sh / h) * srcStride; \
+                    placePixelMacro(pixelFunction); \
+                } \
+            } \
+        dst_strideY += dstStride; deformValues++; \
     }
     #define DRAW_FLIPXY(pixelFunction, placePixelMacro) for (int dst_y = dst_y1, i_y = dst_y1 - y; dst_y < dst_y2; dst_y++, i_y++) { \
         i_y_rsin = -i_y * rsin; \
         i_y_rcos =  i_y * rcos; \
         dstPxLine = dstPx + dst_strideY; \
         index = &SoftwareRenderer::PaletteColors[SoftwareRenderer::PaletteIndexLines[dst_y]][0]; \
-        for (int dst_x = dst_x1, i_x = dst_x1 - x; dst_x < dst_x2; dst_x++, i_x++) { \
-            src_x = (i_x * rcos + i_y_rsin) >> 9; \
-            src_y = (i_x * rsin + i_y_rcos) >> 9; \
-            if (src_x >= _x1 && src_y >= _y1 && \
-                src_x <  _x2 && src_y <  _y2) { \
-                src_x       = (src_x2 - (src_x - _x1) * sw / w); \
-                src_strideY = (src_y2 - (src_y - _y1) * sh / h) * srcStride; \
-                placePixelMacro(pixelFunction); \
+        if (SoftwareRenderer::UseSpriteDeform) \
+            for (int dst_x = dst_x1, i_x = dst_x1 - x; dst_x < dst_x2; dst_x++, i_x++) { \
+                DEFORM_X; \
+                src_x = (i_x * rcos + i_y_rsin) >> 9; \
+                src_y = (i_x * rsin + i_y_rcos) >> 9; \
+                if (src_x >= _x1 && src_y >= _y1 && \
+                    src_x <  _x2 && src_y <  _y2) { \
+                    src_x       = (src_x2 - (src_x - _x1) * sw / w); \
+                    src_strideY = (src_y2 - (src_y - _y1) * sh / h) * srcStride; \
+                    placePixelMacro(pixelFunction); \
+                } \
+                dst_x -= *deformValues; \
             } \
-        } \
-        dst_strideY += dstStride; \
+        else \
+            for (int dst_x = dst_x1, i_x = dst_x1 - x; dst_x < dst_x2; dst_x++, i_x++) { \
+                src_x = (i_x * rcos + i_y_rsin) >> 9; \
+                src_y = (i_x * rsin + i_y_rcos) >> 9; \
+                if (src_x >= _x1 && src_y >= _y1 && \
+                    src_x <  _x2 && src_y <  _y2) { \
+                    src_x       = (src_x2 - (src_x - _x1) * sw / w); \
+                    src_strideY = (src_y2 - (src_y - _y1) * sh / h) * srcStride; \
+                    placePixelMacro(pixelFunction); \
+                } \
+            } \
+        dst_strideY += dstStride; deformValues++; \
     }
 
     #define BLENDFLAGS(flipMacro, placePixelMacro) \
@@ -2920,6 +3016,8 @@ void DrawSpriteImageTransformed(Texture* texture, int x, int y, int offx, int of
     int dst_strideY, src_strideY;
     int* multTableAt = &MultTable[opacity << 8];
     int* multSubTableAt = &MultSubTable[opacity << 8];
+    Sint32* deformValues = &SoftwareRenderer::SpriteDeformBuffer[dst_y1];
+
     if (Graphics::UsePalettes && texture->Paletted) {
         switch (flipFlag) {
             case 0:
@@ -3176,7 +3274,7 @@ PUBLIC STATIC void     SoftwareRenderer::DrawTile(int tile, int x, int y, bool f
 PUBLIC STATIC void     SoftwareRenderer::DrawSceneLayer_InitTileScanLines(SceneLayer* layer, View* currentView) {
     switch (layer->DrawBehavior) {
         case DrawBehavior_PGZ1_BG:
-		case DrawBehavior_HorizontalParallax: {
+        case DrawBehavior_HorizontalParallax: {
             int viewX = (int)currentView->X;
             int viewY = (int)currentView->Y;
             // int viewWidth = (int)currentView->Width;
@@ -3198,9 +3296,9 @@ PUBLIC STATIC void     SoftwareRenderer::DrawSceneLayer_InitTileScanLines(SceneL
             }
 
             // Create scan lines
-            int scrollOffset = Scene::Frame * layer->ConstantY;
-            int scrollLine = (scrollOffset + ((viewY + layerOffsetY) * layer->RelativeY)) >> 8;
-                scrollLine %= layerHeight;
+            Sint64 scrollOffset = Scene::Frame * layer->ConstantY;
+            Sint64 scrollLine = (scrollOffset + ((viewY + layerOffsetY) * layer->RelativeY)) >> 8;
+                   scrollLine %= layerHeight;
             if (scrollLine < 0)
                 scrollLine += layerHeight;
 
@@ -3268,19 +3366,19 @@ PUBLIC STATIC void     SoftwareRenderer::DrawSceneLayer_InitTileScanLines(SceneL
                     parallaxIndex++;
                 }
             }
-			break;
+            break;
         }
-		case DrawBehavior_VerticalParallax: {
-			break;
+        case DrawBehavior_VerticalParallax: {
+            break;
         }
-		case DrawBehavior_CustomTileScanLines: {
-            int scrollOffset = Scene::Frame * layer->ConstantY;
-            int scrollPositionX = ((scrollOffset + (((int)currentView->X + layer->OffsetX) * layer->RelativeY)) >> 8) & 0xFFFF;
-                scrollPositionX %= layer->Width;
-                scrollPositionX <<= 16;
-            int scrollPositionY = ((scrollOffset + (((int)currentView->Y + layer->OffsetY) * layer->RelativeY)) >> 8) & 0xFFFF;
-                scrollPositionY %= layer->Height;
-                scrollPositionY <<= 16;
+        case DrawBehavior_CustomTileScanLines: {
+            Sint64 scrollOffset = Scene::Frame * layer->ConstantY;
+            Sint64 scrollPositionX = ((scrollOffset + (((int)currentView->X + layer->OffsetX) * layer->RelativeY)) >> 8) & 0xFFFF;
+                   scrollPositionX %= layer->Width;
+                   scrollPositionX <<= 16;
+            Sint64 scrollPositionY = ((scrollOffset + (((int)currentView->Y + layer->OffsetY) * layer->RelativeY)) >> 8) & 0xFFFF;
+                   scrollPositionY %= layer->Height;
+                   scrollPositionY <<= 16;
 
             TileScanLine* scanLine = &TileScanLineBuffer[0];
             for (int i = 0; i < currentView->Height; i++) {
@@ -3293,30 +3391,9 @@ PUBLIC STATIC void     SoftwareRenderer::DrawSceneLayer_InitTileScanLines(SceneL
                 scanLine++;
             }
 
-            // int distX, distY, projectedX, projectedY;
-            // int sinVal = 0x000;
-            // int cosVal = 0x100;
-            // int viewHalfW = currentView->Width / 2;
-            // int tileSrcY = 0x1000000; // 0x100 0000
-            // int scrollPosition = (Scene::Frame * 0x8000) & 0x7FFFFFFF;
-            // TileScanLine* scanLine = &TileScanLineBuffer[0];
-            // for (int i = 160; i >= 32; i--) {
-            //     distX = tileSrcY / (8 * i);
-            //     distY = distX;
-            //     projectedX = cosVal * distX;
-            //     projectedY = sinVal * distY;
-            //     scanLine->DeltaX = -projectedX >> 7;
-            //     scanLine->DeltaY = projectedY >> 7;
-            //     scanLine->SrcX = projectedY - viewHalfW * scanLine->DeltaX;
-            //     scanLine->SrcY = scrollPosition + 2 * projectedX - viewHalfW * scanLine->DeltaY;
-            //     tileSrcY -= 0x4000;
-            //     scanLine++;
-            // }
-            //
-            // Graphics::SetClip(0, 0, currentView->Width, 120);
-			break;
+            break;
         }
-	}
+    }
 }
 PUBLIC STATIC void     SoftwareRenderer::DrawSceneLayer_HorizontalParallax(SceneLayer* layer, View* currentView) {
     int dst_x1 = 0;
@@ -3354,8 +3431,17 @@ PUBLIC STATIC void     SoftwareRenderer::DrawSceneLayer_HorizontalParallax(Scene
     AnimFrame frameStr;
     Texture* texture;
 
-    // int blendFlag = 0;
-    // int opacity = 0x100;
+    int blendFlag = BlendFlag;
+    int opacity = Alpha;
+    if (!Graphics::TextureBlend) {
+        blendFlag = BlendFlag_OPAQUE;
+        opacity = 0;
+    }
+
+    ALTER_BLENDFLAG_AND_OPACITY(blendFlag, opacity);
+
+    int* multTableAt = &MultTable[opacity << 8];
+    int* multSubTableAt = &MultSubTable[opacity << 8];
 
     Uint32* tile;
     Uint32* color;
@@ -3383,6 +3469,31 @@ PUBLIC STATIC void     SoftwareRenderer::DrawSceneLayer_HorizontalParallax(Scene
     int c_pixelsOfTileRemaining, tileFlipOffset;
 	TileConfig* baseTileCfg = Scene::ShowTileCollisionFlag == 2 ? Scene::TileCfgB : Scene::TileCfgA;
 
+    void (*pixelFunction)(Uint32*, Uint32*, int, int*, int*) = NULL;
+    switch (blendFlag) {
+        case BlendFlag_OPAQUE:
+            pixelFunction = PixelNoFiltSetOpaque;
+            break;
+        case BlendFlag_TRANSPARENT:
+            pixelFunction = PixelNoFiltSetTransparent;
+            break;
+        case BlendFlag_ADDITIVE:
+            pixelFunction = PixelNoFiltSetAdditive;
+            break;
+        case BlendFlag_SUBTRACT:
+            pixelFunction = PixelNoFiltSetSubtract;
+            break;
+        case BlendFlag_MATCH_EQUAL:
+            pixelFunction = PixelNoFiltSetMatchEqual;
+            break;
+        case BlendFlag_MATCH_NOT_EQUAL:
+            pixelFunction = PixelNoFiltSetMatchNotEqual;
+            break;
+        case BlendFlag_FILTER:
+            pixelFunction = PixelNoFiltSetFilter;
+            break;
+    }
+
     int j;
     TileScanLine* tScanLine = &TileScanLineBuffer[dst_y1];
     for (int dst_y = dst_y1; dst_y < dst_y2; dst_y++) {
@@ -3396,12 +3507,13 @@ PUBLIC STATIC void     SoftwareRenderer::DrawSceneLayer_HorizontalParallax(Scene
             tScanLine->SrcX -= layerWidthInPixels;
 
         int dst_x = dst_x1, c_dst_x = dst_x1;
-        int srcX = tScanLine->SrcX, srcY = tScanLine->SrcY, srcTX, srcTY, pixelsOfTileRemaining;
+        int pixelsOfTileRemaining;
+        Sint64 srcX = tScanLine->SrcX, srcY = tScanLine->SrcY;
         index = &SoftwareRenderer::PaletteColors[SoftwareRenderer::PaletteIndexLines[dst_y]][0];
 
         // Draw leftmost tile in scanline
-        srcTX = srcX & 15;
-        srcTY = srcY & 15;
+        int srcTX = srcX & 15;
+        int srcTY = srcY & 15;
         sourceTileCellX = (srcX >> 4);
         sourceTileCellY = (srcY >> 4);
         c_pixelsOfTileRemaining = srcTX;
@@ -3435,7 +3547,7 @@ PUBLIC STATIC void     SoftwareRenderer::DrawSceneLayer_HorizontalParallax(Scene
                 if (isPalettedSources[tileID]) {
                     while (pixelsOfTileRemaining) {
                         if (*color)
-                            PixelNoFiltSetOpaque(&index[*color], &dstPxLine[dst_x], 0, NULL, NULL);
+                            pixelFunction(&index[*color], &dstPxLine[dst_x], opacity, multTableAt, multSubTableAt);
                         pixelsOfTileRemaining--;
                         dst_x++;
                         color--;
@@ -3444,7 +3556,7 @@ PUBLIC STATIC void     SoftwareRenderer::DrawSceneLayer_HorizontalParallax(Scene
                 else {
                     while (pixelsOfTileRemaining) {
                         if (*color & 0xFF000000U)
-                            PixelNoFiltSetOpaque(color, &dstPxLine[dst_x], 0, NULL, NULL);
+                            pixelFunction(color, &dstPxLine[dst_x], opacity, multTableAt, multSubTableAt);
                         pixelsOfTileRemaining--;
                         dst_x++;
                         color--;
@@ -3457,7 +3569,7 @@ PUBLIC STATIC void     SoftwareRenderer::DrawSceneLayer_HorizontalParallax(Scene
                 if (isPalettedSources[tileID]) {
                     while (pixelsOfTileRemaining) {
                         if (*color)
-                            PixelNoFiltSetOpaque(&index[*color], &dstPxLine[dst_x], 0, NULL, NULL);
+                            pixelFunction(&index[*color], &dstPxLine[dst_x], opacity, multTableAt, multSubTableAt);
                         pixelsOfTileRemaining--;
                         dst_x++;
                         color++;
@@ -3466,7 +3578,7 @@ PUBLIC STATIC void     SoftwareRenderer::DrawSceneLayer_HorizontalParallax(Scene
                 else {
                     while (pixelsOfTileRemaining) {
                         if (*color & 0xFF000000U)
-                            PixelNoFiltSetOpaque(color, &dstPxLine[dst_x], 0, NULL, NULL);
+                            pixelFunction(color, &dstPxLine[dst_x], opacity, multTableAt, multSubTableAt);
                         pixelsOfTileRemaining--;
                         dst_x++;
                         color++;
@@ -3529,7 +3641,7 @@ PUBLIC STATIC void     SoftwareRenderer::DrawSceneLayer_HorizontalParallax(Scene
                 if ((*tile & TILE_FLIPX_MASK)) {
                     color = &tileSources[tileID][srcTYb * srcStrides[tileID]];
                     if (isPalettedSources[tileID]) {
-                        #define UNLOOPED(n, k) if (color[n]) { PixelNoFiltSetOpaque(&index[color[n]], &dstPxLine[dst_x + k], 0, NULL, NULL); }
+                        #define UNLOOPED(n, k) if (color[n]) { pixelFunction(&index[color[n]], &dstPxLine[dst_x + k], opacity, multTableAt, multSubTableAt); }
                         UNLOOPED(0, 15);
                         UNLOOPED(1, 14);
                         UNLOOPED(2, 13);
@@ -3549,7 +3661,7 @@ PUBLIC STATIC void     SoftwareRenderer::DrawSceneLayer_HorizontalParallax(Scene
                         #undef UNLOOPED
                     }
                     else {
-                        #define UNLOOPED(n, k) if (color[n] & 0xFF000000U) { PixelNoFiltSetOpaque(&color[n], &dstPxLine[dst_x + k], 0, NULL, NULL); }
+                        #define UNLOOPED(n, k) if (color[n] & 0xFF000000U) { pixelFunction(&color[n], &dstPxLine[dst_x + k], opacity, multTableAt, multSubTableAt); }
                         UNLOOPED(0, 15);
                         UNLOOPED(1, 14);
                         UNLOOPED(2, 13);
@@ -3573,7 +3685,7 @@ PUBLIC STATIC void     SoftwareRenderer::DrawSceneLayer_HorizontalParallax(Scene
                 else {
                     color = &tileSources[tileID][srcTYb * srcStrides[tileID]];
                     if (isPalettedSources[tileID]) {
-                        #define UNLOOPED(n, k) if (color[n]) { PixelNoFiltSetOpaque(&index[color[n]], &dstPxLine[dst_x + k], 0, NULL, NULL); }
+                        #define UNLOOPED(n, k) if (color[n]) { pixelFunction(&index[color[n]], &dstPxLine[dst_x + k], opacity, multTableAt, multSubTableAt); }
                         UNLOOPED(0, 0);
                         UNLOOPED(1, 1);
                         UNLOOPED(2, 2);
@@ -3593,7 +3705,7 @@ PUBLIC STATIC void     SoftwareRenderer::DrawSceneLayer_HorizontalParallax(Scene
                         #undef UNLOOPED
                     }
                     else {
-                        #define UNLOOPED(n, k) if (color[n] & 0xFF000000U) { PixelNoFiltSetOpaque(&color[n], &dstPxLine[dst_x + k], 0, NULL, NULL); }
+                        #define UNLOOPED(n, k) if (color[n] & 0xFF000000U) { pixelFunction(&color[n], &dstPxLine[dst_x + k], opacity, multTableAt, multSubTableAt); }
                         UNLOOPED(0, 0);
                         UNLOOPED(1, 1);
                         UNLOOPED(2, 2);
@@ -3634,95 +3746,6 @@ PUBLIC STATIC void     SoftwareRenderer::DrawSceneLayer_HorizontalParallax(Scene
         }
         srcX += maxTileDraw * 16;
 
-        /*
-        // Draw rightmost
-        sourceTileCellX++;
-        tile++;
-        if (sourceTileCellX == layerWidth) {
-            sourceTileCellX = 0;
-            tile -= layerWidth;
-        }
-
-        srcTX = dst_x;
-        srcTY = srcY & 15;
-        pixelsOfTileRemaining = 16 - srcTX;
-
-        if ((*tile & TILE_IDENT_MASK) != Scene::EmptyTile) {
-            int tileID = *tile & TILE_IDENT_MASK;
-            // If y-flipped
-            if ((*tile & TILE_FLIPY_MASK))
-                srcTY ^= 15;
-            // If x-flipped
-            if ((*tile & TILE_FLIPX_MASK)) {
-                srcTX ^= 15;
-                color = &tileSources[tileID][srcTX + srcTY * srcStrides[tileID]];
-                if (isPalettedSources[tileID]) {
-                    while (pixelsOfTileRemaining) {
-                        if (*color)
-                            PixelNoFiltSetOpaque(&index[*color], &dstPxLine[dst_x], 0, NULL, NULL);
-                        pixelsOfTileRemaining--;
-                        dst_x++;
-                        color--;
-                    }
-                }
-                else {
-                    while (pixelsOfTileRemaining) {
-                        if (*color & 0xFF000000U)
-                            PixelNoFiltSetOpaque(color, &dstPxLine[dst_x], 0, NULL, NULL);
-                        pixelsOfTileRemaining--;
-                        dst_x++;
-                        color--;
-                    }
-                }
-            }
-            // Otherwise
-            else {
-                color = &tileSources[tileID][srcTX + srcTY * srcStrides[tileID]];
-                if (isPalettedSources[tileID]) {
-                    while (pixelsOfTileRemaining) {
-                        if (*color)
-                            PixelNoFiltSetOpaque(&index[*color], &dstPxLine[dst_x], 0, NULL, NULL);
-                        pixelsOfTileRemaining--;
-                        dst_x++;
-                        color++;
-                    }
-                }
-                else {
-                    while (pixelsOfTileRemaining) {
-                        if (*color & 0xFF000000U)
-                            PixelNoFiltSetOpaque(color, &dstPxLine[dst_x], 0, NULL, NULL);
-                        pixelsOfTileRemaining--;
-                        dst_x++;
-                        color++;
-                    }
-                }
-            }
-        }
-        else {
-            dst_x += pixelsOfTileRemaining;
-        }
-        // */
-
-
-
-        // for (int dst_x = dst_x1; dst_x < dst_x2; dst_x++) {
-        //     srcTX = srcX >> 16;
-        //     srcTY = srcY >> 16;
-        //     sourceTileCellX = (srcX >> 20) & layerWidthTileMask;
-        //     sourceTileCellY = (srcY >> 20) & layerHeightTileMask;
-        //     tile = layer->Tiles[sourceTileCellX + (sourceTileCellY << layerWidthInBits)] & TILE_IDENT_MASK;
-        //     color = tileSources[tile][(srcTX & 15) + (srcTY & 15) * srcStride];
-        //     if (isPalettedSources[tile]) {
-        //         if (color)
-        //             PixelNoFiltSetOpaque(&index[color], &dstPxLine[dst_x], 0, NULL, NULL);
-        //     }
-        //     else {
-        //         if (color & 0xFF000000U)
-        //             PixelNoFiltSetOpaque(&color, &dstPxLine[dst_x], 0, NULL, NULL);
-        //     }
-        //     srcX += srcDX;
-        //     srcY += srcDY;
-        // }
         tScanLine++;
         dst_strideY += dstStride;
     }
@@ -3762,14 +3785,15 @@ PUBLIC STATIC void     SoftwareRenderer::DrawSceneLayer_CustomTileScanLines(Scen
     AnimFrame frameStr;
     Texture* texture;
 
-    // int blendFlag = 0;
-    // int opacity = 0x100;
+    int blendFlag = BlendFlag;
+    if (!Graphics::TextureBlend)
+        blendFlag = BlendFlag_OPAQUE;
+    if (FilterTable != &FilterColor[0])
+        blendFlag = BlendFlag_FILTER;
 
     Uint32 color;
     Uint32* index;
     int dst_strideY = dst_y1 * dstStride;
-    // int* multTableAt = &MultTable[0x100 << 8];
-    // int* multSubTableAt = &MultSubTable[0x100 << 8];
 
     vector<Uint32> srcStrides;
     vector<Uint32*> tileSources;
@@ -3786,36 +3810,97 @@ PUBLIC STATIC void     SoftwareRenderer::DrawSceneLayer_CustomTileScanLines(Scen
         isPalettedSources[i] = Graphics::UsePalettes && texture->Paletted;
     }
 
+    void (*pixelFunction)(Uint32*, Uint32*, int, int*, int*) = NULL;
+    switch (blendFlag) {
+        case BlendFlag_OPAQUE:
+            pixelFunction = PixelNoFiltSetOpaque;
+            break;
+        case BlendFlag_TRANSPARENT:
+            pixelFunction = PixelNoFiltSetTransparent;
+            break;
+        case BlendFlag_ADDITIVE:
+            pixelFunction = PixelNoFiltSetAdditive;
+            break;
+        case BlendFlag_SUBTRACT:
+            pixelFunction = PixelNoFiltSetSubtract;
+            break;
+        case BlendFlag_MATCH_EQUAL:
+            pixelFunction = PixelNoFiltSetMatchEqual;
+            break;
+        case BlendFlag_MATCH_NOT_EQUAL:
+            pixelFunction = PixelNoFiltSetMatchNotEqual;
+            break;
+        case BlendFlag_FILTER:
+            pixelFunction = PixelNoFiltSetFilter;
+            break;
+    }
+
     TileScanLine* scanLine = &TileScanLineBuffer[dst_y1];
     for (int dst_y = dst_y1; dst_y < dst_y2; dst_y++) {
         dstPxLine = dstPx + dst_strideY;
-        int srcX = scanLine->SrcX,
-            srcY = scanLine->SrcY,
-            srcDX = scanLine->DeltaX,
-            srcDY = scanLine->DeltaY,
-            srcTX, srcTY;
+
+        Sint64 srcX = scanLine->SrcX,
+               srcY = scanLine->SrcY,
+               srcDX = scanLine->DeltaX,
+               srcDY = scanLine->DeltaY;
+
+        Uint32 maxHorzCells = scanLine->MaxHorzCells;
+        Uint32 maxVertCells = scanLine->MaxVertCells;
+
+        void (*linePixelFunction)(Uint32*, Uint32*, int, int*, int*);
+
+        int opacity = 0;
+        if (Graphics::TextureBlend) {
+            opacity = Alpha - (0xFF - scanLine->Opacity);
+            if (opacity < 0)
+                opacity = 0;
+        }
+
+        int* multTableAt = &MultTable[opacity << 8];
+        int* multSubTableAt = &MultSubTable[opacity << 8];
+
+        if (opacity == 0 && (blendFlag != BlendFlag_OPAQUE && blendFlag != BlendFlag_FILTER))
+            goto scanlineDone;
+
+        linePixelFunction = pixelFunction;
+
+        if (opacity != 0 && blendFlag == BlendFlag_OPAQUE)
+            linePixelFunction = PixelNoFiltSetTransparent;
+        if (opacity == 0xFF && blendFlag == BlendFlag_TRANSPARENT)
+            linePixelFunction = PixelNoFiltSetOpaque;
+
         index = &SoftwareRenderer::PaletteColors[SoftwareRenderer::PaletteIndexLines[dst_y]][0];
+
         for (int dst_x = dst_x1; dst_x < dst_x2; dst_x++) {
-            srcTX = srcX >> 16;
-            srcTY = srcY >> 16;
+            int srcTX = srcX >> 16;
+            int srcTY = srcY >> 16;
+
             sourceTileCellX = (srcX >> 20) & layerWidthTileMask;
             sourceTileCellY = (srcY >> 20) & layerHeightTileMask;
+
+            if (maxHorzCells != 0)
+                sourceTileCellX %= maxHorzCells;
+            if (maxVertCells != 0)
+                sourceTileCellY %= maxVertCells;
+
             tile = layer->Tiles[sourceTileCellX + (sourceTileCellY << layerWidthInBits)] & TILE_IDENT_MASK;
 			// printf("tile: %X (%s), sourceTileCellX: %d, sourceTileCellY: %d\n", tile, layer->Name, sourceTileCellX, sourceTileCellY);
             if (tile != Scene::EmptyTile) {
                 color = tileSources[tile][(srcTX & 15) + (srcTY & 15) * srcStrides[tile]];
                 if (isPalettedSources[tile]) {
                     if (color)
-                        PixelNoFiltSetOpaque(&index[color], &dstPxLine[dst_x], 0, NULL, NULL);
+                        linePixelFunction(&index[color], &dstPxLine[dst_x], opacity, multTableAt, multSubTableAt);
                 }
                 else {
                     if (color & 0xFF000000U)
-                        PixelNoFiltSetOpaque(&color, &dstPxLine[dst_x], 0, NULL, NULL);
+                        linePixelFunction(&color, &dstPxLine[dst_x], opacity, multTableAt, multSubTableAt);
                 }
             }
             srcX += srcDX;
             srcY += srcDY;
         }
+
+scanlineDone:
         scanLine++;
         dst_strideY += dstStride;
     }

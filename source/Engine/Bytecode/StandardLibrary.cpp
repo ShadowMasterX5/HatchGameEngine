@@ -219,6 +219,30 @@ namespace LOCAL {
 
         return Scene::SpriteList[where]->AsSprite;
     }
+    inline ISound*         GetSound(VMValue* args, int index, Uint32 threadID) {
+        int where = GetInteger(args, index, threadID);
+        if (where < 0 || where > (int)Scene::SoundList.size()) {
+            if (BytecodeObjectManager::Threads[threadID].ThrowRuntimeError(false,
+                "Sound index \"%d\" outside bounds of list.", where) == ERROR_RES_CONTINUE)
+                BytecodeObjectManager::Threads[threadID].ReturnFromNative();
+        }
+
+        if (!Scene::SoundList[where]) return NULL;
+
+        return Scene::SoundList[where]->AsSound;
+    }
+    inline ISound*         GetMusic(VMValue* args, int index, Uint32 threadID) {
+        int where = GetInteger(args, index, threadID);
+        if (where < 0 || where >(int)Scene::MusicList.size()) {
+            if (BytecodeObjectManager::Threads[threadID].ThrowRuntimeError(false,
+                "Music index \"%d\" outside bounds of list.", where) == ERROR_RES_CONTINUE)
+                BytecodeObjectManager::Threads[threadID].ReturnFromNative();
+        }
+
+        if (!Scene::MusicList[where]) return NULL;
+
+        return Scene::MusicList[where]->AsMusic;
+    }
     inline IModel*         GetModel(VMValue* args, int index, Uint32 threadID) {
         int where = GetInteger(args, index, threadID);
         if (where < 0 || where > (int)Scene::ModelList.size()) {
@@ -1950,32 +1974,7 @@ VMValue Draw_SetTextureBlend(int argCount, VMValue* args, Uint32 threadID) {
  */
 VMValue Draw_SetBlendMode(int argCount, VMValue* args, Uint32 threadID) {
     CHECK_ARGCOUNT(1);
-    switch (Graphics::BlendMode = GET_ARG(0, GetInteger)) {
-        case BlendMode_NORMAL:
-            Graphics::SetBlendMode(
-                BlendFactor_SRC_ALPHA, BlendFactor_INV_SRC_ALPHA,
-                BlendFactor_SRC_ALPHA, BlendFactor_INV_SRC_ALPHA);
-            break;
-        case BlendMode_ADD:
-            Graphics::SetBlendMode(
-                BlendFactor_SRC_ALPHA, BlendFactor_ONE,
-                BlendFactor_SRC_ALPHA, BlendFactor_ONE);
-            break;
-        case BlendMode_MAX:
-            Graphics::SetBlendMode(
-                BlendFactor_SRC_ALPHA, BlendFactor_INV_SRC_COLOR,
-                BlendFactor_SRC_ALPHA, BlendFactor_INV_SRC_COLOR);
-            break;
-        case BlendMode_SUBTRACT:
-            Graphics::SetBlendMode(
-                BlendFactor_ZERO, BlendFactor_INV_SRC_COLOR,
-                BlendFactor_SRC_ALPHA, BlendFactor_INV_SRC_ALPHA);
-            break;
-        default:
-            Graphics::SetBlendMode(
-                BlendFactor_SRC_ALPHA, BlendFactor_INV_SRC_ALPHA,
-                BlendFactor_SRC_ALPHA, BlendFactor_INV_SRC_ALPHA);
-    }
+    Graphics::SetBlendMode(GET_ARG(0, GetInteger));
     return NULL_VAL;
 }
 /***
@@ -2400,6 +2399,34 @@ VMValue Draw_ResetTextureTarget(int argCount, VMValue* args, Uint32 threadID) {
     // Matrix4x4::Scale(currentView->ProjectionMatrix, currentView->ProjectionMatrix, 1.0, -1.0, 1.0);
     // Matrix4x4::Translate(currentView->ProjectionMatrix, currentView->ProjectionMatrix, -currentView->X - currentView->Width / 2, -currentView->Y - currentView->Height / 2, -currentView->Z);
 	Graphics::UpdateProjectionMatrix();
+    return NULL_VAL;
+}
+
+/***
+ * Draw.UseSpriteDeform
+ * \desc Sets whether or not to use sprite deform when drawing.
+ * \param useDeform (Boolean): Whether or not to use sprite deform when drawing.
+ * \ns Scene
+ */
+VMValue Draw_UseSpriteDeform(int argCount, VMValue* args, Uint32 threadID) {
+    CHECK_ARGCOUNT(1);
+    int useDeform = GET_ARG(0, GetInteger);
+    SoftwareRenderer::UseSpriteDeform = useDeform;
+    return NULL_VAL;
+}
+/***
+ * Draw.SetSpriteDeformLine
+ * \desc Sets the sprite deform line at the specified line index.
+ * \param deformIndex (Integer): Index of deform line. (0 = top of screen, 1 = the line below it, 2 = etc.)
+ * \param deformValue (Decimal): Deform value.
+ * \ns Scene
+ */
+VMValue Draw_SetSpriteDeformLine(int argCount, VMValue* args, Uint32 threadID) {
+    CHECK_ARGCOUNT(2);
+    int lineIndex = GET_ARG(0, GetInteger);
+    int deformValue = (int)GET_ARG(1, GetDecimal);
+
+    SoftwareRenderer::SpriteDeformBuffer[lineIndex] = deformValue;
     return NULL_VAL;
 }
 // #endregion
@@ -3939,14 +3966,40 @@ VMValue Matrix_Rotate(int argCount, VMValue* args, Uint32 threadID) {
  * Music.Play
  * \desc Places the music onto the music stack and plays it.
  * \param music (Integer): The music index to play.
+ * \paramOpt panning (Decimal): Control the panning of the audio. -1.0 makes it sound in left ear only, 1.0 makes it sound in right ear, and closer to 0.0 centers it. (0.0 is the default.)
+ * \paramOpt speed (Decimal): Control the speed of the audio. > 1.0 makes it faster, < 1.0 is slower, 1.0 is normal speed. (1.0 is the default.)
+ * \paramOpt volume (Decimal): Controls the volume of the audio. 0.0 is muted, 1.0 is normal volume. (1.0 is the default.)
  * \ns Music
  */
 VMValue Music_Play(int argCount, VMValue* args, Uint32 threadID) {
-    CHECK_ARGCOUNT(1);
+    CHECK_AT_LEAST_ARGCOUNT(1);
+    ISound* audio = GET_ARG(0, GetMusic);
+    float panning = GET_ARG_OPT(1, GetDecimal, 0.0f);
+    float speed = GET_ARG_OPT(2, GetDecimal, 1.0f);
+    float volume = GET_ARG_OPT(3, GetDecimal, 1.0f);
 
-    ISound* audio = Scene::MusicList[GET_ARG(0, GetInteger)]->AsMusic;
+    AudioManager::PushMusic(audio, false, 0, panning, speed, volume);
+    return NULL_VAL;
+}
+/***
+ * Music.PlayAtTime
+ * \desc Places the music onto the music stack and plays it at a time (in seconds).
+ * \param music (Integer): The music index to play.
+ * \param startPoint (Decimal): The time (in seconds) to start the music at.
+ * \paramOpt panning (Decimal): Control the panning of the audio. -1.0 makes it sound in left ear only, 1.0 makes it sound in right ear, and closer to 0.0 centers it. (0.0 is the default.)
+ * \paramOpt speed (Decimal): Control the speed of the audio. > 1.0 makes it faster, < 1.0 is slower, 1.0 is normal speed. (1.0 is the default.)
+ * \paramOpt volume (Decimal): Controls the volume of the audio. 0.0 is muted, 1.0 is normal volume. (1.0 is the default.)
+ * \ns Music
+ */
+VMValue Music_PlayAtTime(int argCount, VMValue* args, Uint32 threadID) {
+    CHECK_AT_LEAST_ARGCOUNT(2);
+    ISound* audio = GET_ARG(0, GetMusic);
+    double start_point = GET_ARG(1, GetDecimal);
+    float panning = GET_ARG_OPT(2, GetDecimal, 0.0f);
+    float speed = GET_ARG_OPT(3, GetDecimal, 1.0f);
+    float volume = GET_ARG_OPT(4, GetDecimal, 1.0f);
 
-    AudioManager::PushMusic(audio, false, 0);
+    AudioManager::PushMusicAt(audio, start_point, false, 0, panning, speed, volume);
     return NULL_VAL;
 }
 /***
@@ -3957,7 +4010,7 @@ VMValue Music_Play(int argCount, VMValue* args, Uint32 threadID) {
  */
 VMValue Music_Stop(int argCount, VMValue* args, Uint32 threadID) {
     CHECK_ARGCOUNT(1);
-    ISound* audio = Scene::MusicList[GET_ARG(0, GetInteger)]->AsMusic;
+    ISound* audio = GET_ARG(0, GetMusic);
     AudioManager::RemoveMusic(audio);
     return NULL_VAL;
 }
@@ -3968,7 +4021,6 @@ VMValue Music_Stop(int argCount, VMValue* args, Uint32 threadID) {
  */
 VMValue Music_StopWithFadeOut(int argCount, VMValue* args, Uint32 threadID) {
     CHECK_ARGCOUNT(1);
-    // ISound* audio = Scene::MusicList[GET_ARG(0, GetInteger)]->AsMusic;
     float seconds = GET_ARG(0, GetDecimal);
     if (seconds < 0.f)
         seconds = 0.f;
@@ -4019,15 +4071,46 @@ VMValue Music_Clear(int argCount, VMValue* args, Uint32 threadID) {
  * \param music (Integer): The music index to play.
  * \param loop (Boolean): Unused.
  * \param loopPoint (Integer): The sample index to loop back to.
+ * \paramOpt panning (Decimal): Control the panning of the audio. -1.0 makes it sound in left ear only, 1.0 makes it sound in right ear, and closer to 0.0 centers it. (0.0 is the default.)
+ * \paramOpt speed (Decimal): Control the speed of the audio. > 1.0 makes it faster, < 1.0 is slower, 1.0 is normal speed. (1.0 is the default.)
+ * \paramOpt volume (Decimal): Controls the volume of the audio. 0.0 is muted, 1.0 is normal volume. (1.0 is the default.)
  * \ns Music
  */
 VMValue Music_Loop(int argCount, VMValue* args, Uint32 threadID) {
-    CHECK_ARGCOUNT(3);
-    ISound* audio = Scene::MusicList[GET_ARG(0, GetInteger)]->AsMusic;
+    CHECK_AT_LEAST_ARGCOUNT(3);
+    ISound* audio = GET_ARG(0, GetMusic);
     // int loop = GET_ARG(1, GetInteger);
     int loop_point = GET_ARG(2, GetInteger);
+    float panning = GET_ARG_OPT(3, GetDecimal, 0.0f);
+    float speed = GET_ARG_OPT(4, GetDecimal, 1.0f);
+    float volume = GET_ARG_OPT(5, GetDecimal, 1.0f);
 
-    AudioManager::PushMusic(audio, true, loop_point);
+    AudioManager::PushMusic(audio, true, loop_point, panning, speed, volume);
+    return NULL_VAL;
+}
+/***
+ * Music.LoopAtTime
+ * \desc Places the music onto the music stack and plays it, looping back to the specified sample index if it reaches the end of playback.
+ * \param music (Integer): The music index to play.
+ * \param startPoint (Decimal): The time (in seconds) to start the music at.
+ * \param loop (Boolean): Unused.
+ * \param loopPoint (Integer): The sample index to loop back to.
+ * \paramOpt panning (Decimal): Control the panning of the audio. -1.0 makes it sound in left ear only, 1.0 makes it sound in right ear, and closer to 0.0 centers it. (0.0 is the default.)
+ * \paramOpt speed (Decimal): Control the speed of the audio. > 1.0 makes it faster, < 1.0 is slower, 1.0 is normal speed. (1.0 is the default.)
+ * \paramOpt volume (Decimal): Controls the volume of the audio. 0.0 is muted, 1.0 is normal volume. (1.0 is the default.)
+ * \ns Music
+ */
+VMValue Music_LoopAtTime(int argCount, VMValue* args, Uint32 threadID) {
+    CHECK_AT_LEAST_ARGCOUNT(4);
+    ISound* audio = GET_ARG(0, GetMusic);
+    double start_point = GET_ARG(1, GetDecimal);
+    // int loop = GET_ARG(2, GetInteger);
+    int loop_point = GET_ARG(3, GetInteger);
+    float panning = GET_ARG_OPT(4, GetDecimal, 0.0f);
+    float speed = GET_ARG_OPT(5, GetDecimal, 1.0f);
+    float volume = GET_ARG_OPT(6, GetDecimal, 1.0f);
+
+    AudioManager::PushMusicAt(audio, start_point, true, loop_point, panning, speed, volume);
     return NULL_VAL;
 }
 /***
@@ -4039,8 +4122,36 @@ VMValue Music_Loop(int argCount, VMValue* args, Uint32 threadID) {
  */
 VMValue Music_IsPlaying(int argCount, VMValue* args, Uint32 threadID) {
     CHECK_ARGCOUNT(1);
-    ISound* audio = Scene::MusicList[GET_ARG(0, GetInteger)]->AsMusic;
+    ISound* audio = GET_ARG(0, GetMusic);
     return INTEGER_VAL(AudioManager::IsPlayingMusic(audio));
+}
+/***
+ * Music.GetPosition
+ * \desc Gets the position of the current track playing.
+ * \param music (Integer): The music index to get the current position (in seconds) of.
+ * \ns Music
+ */
+VMValue Music_GetPosition(int argCount, VMValue* args, Uint32 threadID) {
+    CHECK_ARGCOUNT(1);
+    ISound* audio = GET_ARG(0, GetMusic);
+    return DECIMAL_VAL(audio->SoundData->GetPosition());
+}
+/***
+ * Music.Alter
+ * \desc Alters the playback conditions of the current track playing.
+ * \param panning (Decimal): Control the panning of the audio. -1.0 makes it sound in left ear only, 1.0 makes it sound in right ear, and closer to 0.0 centers it.
+ * \param speed (Decimal): Control the speed of the audio. > 1.0 makes it faster, < 1.0 is slower, 1.0 is normal speed.
+ * \param volume (Decimal): Controls the volume of the audio. 0.0 is muted, 1.0 is normal volume.
+ * \ns Music
+ */
+VMValue Music_Alter(int argCount, VMValue* args, Uint32 threadID) {
+    CHECK_ARGCOUNT(2);
+    float panning = GET_ARG(1, GetDecimal);
+    float speed = GET_ARG(2, GetDecimal);
+    float volume = GET_ARG(3, GetDecimal);
+
+    AudioManager::AlterMusic(panning, speed, volume);
+    return NULL_VAL;
 }
 // #endregion
 
@@ -4832,7 +4943,7 @@ VMValue Resources_FileExists(int argCount, VMValue* args, Uint32 threadID) {
  * \desc Reads all text from the given filename.
  * \param path (String): The path of the resource to read.
  * \return Returns all the text in the resource as a String value if it can be read, otherwise it returns a <code>null</code> value if it cannot be read.
- * \ns File
+ * \ns Resources
  */
 VMValue Resources_ReadAllText(int argCount, VMValue* args, Uint32 threadID) {
     CHECK_ARGCOUNT(1);
@@ -4910,7 +5021,7 @@ VMValue Scene_LoadTileCollisions(int argCount, VMValue* args, Uint32 threadID) {
 /***
  * Scene.AreTileCollisionsLoaded
  * \desc Returns or whether tile collisions are loaded.
- * \return Returns <code>true<code> if tile collisions are loaded, or <code>false<code> if not.
+ * \return Returns <code>true</code> if tile collisions are loaded, or <code>false</code> if not.
  * \ns Scene
  */
 VMValue Scene_AreTileCollisionsLoaded(int argCount, VMValue* args, Uint32 threadID) {
@@ -5244,9 +5355,14 @@ VMValue Scene_SetLayerDrawGroup(int argCount, VMValue* args, Uint32 threadID) {
 }
 /***
  * Scene.SetLayerDrawBehavior
- * \desc Sets the parallax direction of the layer.
+ * \desc Sets the parallax direction of the layer. <br/>\
+</br>Behaviors:<ul>\
+<li><code>DrawBehavior_HorizontalParallax</code>: Horizontal parallax.</li>\
+<li><code>DrawBehavior_VerticalParallax</code>: Do not use.</li>\
+<li><code>DrawBehavior_CustomTileScanLines</code>: Custom scanline behavior.</li>\
+</ul>
  * \param layerIndex (Integer): Index of layer.
- * \param isVertical (Boolean): Number from 0 to 15. (0 = Back, 15 = Front)
+ * \param drawBehavior (Integer): Draw behavior.
  * \ns Scene
  */
 VMValue Scene_SetLayerDrawBehavior(int argCount, VMValue* args, Uint32 threadID) {
@@ -5254,6 +5370,47 @@ VMValue Scene_SetLayerDrawBehavior(int argCount, VMValue* args, Uint32 threadID)
     int index = GET_ARG(0, GetInteger);
     int drawBehavior = GET_ARG(1, GetInteger);
     Scene::Layers[index].DrawBehavior = drawBehavior;
+    return NULL_VAL;
+}
+/***
+ * Scene.SetLayerBlend
+ * \desc Sets whether or not to use color and alpha blending on this layer. <br/>\
+</br>Blend Modes:<ul>\
+<li><code>BlendMode_NORMAL</code>: Normal pixel blending.</li>\
+<li><code>BlendMode_ADD</code>: Additive pixel blending.</li>\
+<li><code>BlendMode_MAX</code>: Maximum pixel blending.</li>\
+<li><code>BlendMode_SUBTRACT</code>: Subtractive pixel blending.</li>\
+<li><code>BlendMode_MATCH_EQUAL</code>: (software-renderer only) Draw pixels only where it matches the Comparison Color.</li>\
+<li><code>BlendMode_MATCH_NOT_EQUAL</code>: (software-renderer only) Draw pixels only where it does not match the Comparison Color.</li>\
+</ul>
+ * \param layerIndex (Integer): Index of layer.
+ * \param doBlend (Boolean): Whether or not to use blending.
+ * \paramOpt blendMode (Integer): The desired blend mode.
+ * \ns Scene
+ */
+VMValue Scene_SetLayerBlend(int argCount, VMValue* args, Uint32 threadID) {
+    CHECK_AT_LEAST_ARGCOUNT(2);
+    int index = GET_ARG(0, GetInteger);
+    Scene::Layers[index].Blending = !!GET_ARG(1, GetInteger);
+    Scene::Layers[index].BlendMode = argCount >= 3 ? GET_ARG(2, GetInteger) : BlendMode_NORMAL;
+    return NULL_VAL;
+}
+/***
+ * Scene.SetLayerOpacity
+ * \desc Sets the opacity of the layer.
+ * \param layerIndex (Integer): Index of layer.
+ * \param opacity (Decimal): Opacity from 0.0 to 1.0.
+ * \ns Scene
+ */
+VMValue Scene_SetLayerOpacity(int argCount, VMValue* args, Uint32 threadID) {
+    CHECK_ARGCOUNT(2);
+    int index = GET_ARG(0, GetInteger);
+    float opacity = GET_ARG(1, GetDecimal);
+    if (opacity < 0.0)
+        BytecodeObjectManager::Threads[threadID].ThrowRuntimeError(false, "Opacity cannot be lower than 0.0.");
+    else if (opacity > 1.0)
+        BytecodeObjectManager::Threads[threadID].ThrowRuntimeError(false, "Opacity cannot be higher than 1.0.");
+    Scene::Layers[index].Opacity = opacity;
     return NULL_VAL;
 }
 /***
@@ -5510,17 +5667,34 @@ VMValue Scene_SetLayerCustomScanlineFunction(int argCount, VMValue* args, Uint32
  * \param srcY (Number):
  * \param deltaX (Number):
  * \param deltaY (Number):
+ * \paramOpt opacity (Decimal):
+ * \paramOpt maxHorzCells (Number):
+ * \paramOpt maxVertCells (Number):
  * \ns Scene
  */
 VMValue Scene_SetTileScanline(int argCount, VMValue* args, Uint32 threadID) {
-    CHECK_ARGCOUNT(5);
+    CHECK_AT_LEAST_ARGCOUNT(5);
     int scanlineIndex = GET_ARG(0, GetInteger);
 
     TileScanLine* scanLine = &SoftwareRenderer::TileScanLineBuffer[scanlineIndex];
-    scanLine->SrcX = (int)(GET_ARG(1, GetDecimal) * 0x10000);
-    scanLine->SrcY = (int)(GET_ARG(2, GetDecimal) * 0x10000);
-    scanLine->DeltaX = (int)(GET_ARG(3, GetDecimal) * 0x10000);
-    scanLine->DeltaY = (int)(GET_ARG(4, GetDecimal) * 0x10000);
+    scanLine->SrcX = (Sint64)(GET_ARG(1, GetDecimal) * 0x10000);
+    scanLine->SrcY = (Sint64)(GET_ARG(2, GetDecimal) * 0x10000);
+    scanLine->DeltaX = (Sint64)(GET_ARG(3, GetDecimal) * 0x10000);
+    scanLine->DeltaY = (Sint64)(GET_ARG(4, GetDecimal) * 0x10000);
+
+    int opacity = 0xFF;
+    if (argCount >= 6) {
+        opacity = (int)(GET_ARG(5, GetDecimal) * 0xFF);
+        if (opacity < 0)
+            opacity = 0;
+        else if (opacity > 0xFF)
+            opacity = 0xFF;
+    }
+    scanLine->Opacity = opacity;
+
+    scanLine->MaxHorzCells = argCount >= 7 ? GET_ARG(6, GetInteger) : 0;
+    scanLine->MaxVertCells = argCount >= 8 ? GET_ARG(7, GetInteger) : 0;
+
     return NULL_VAL;
 }
 
@@ -5900,14 +6074,20 @@ VMValue SocketClient_WriteString(int argCount, VMValue* args, Uint32 threadID) {
  * Sound.Play
  * \desc Plays a sound once.
  * \param sound (Integer): The sound index to play.
+ * \paramOpt panning (Decimal): Control the panning of the audio. -1.0 makes it sound in left ear only, 1.0 makes it sound in right ear, and closer to 0.0 centers it. (0.0 is the default.)
+ * \paramOpt speed (Decimal): Control the speed of the audio. > 1.0 makes it faster, < 1.0 is slower, 1.0 is normal speed. (1.0 is the default.)
+ * \paramOpt volume (Decimal): Controls the volume of the audio. 0.0 is muted, 1.0 is normal volume. (1.0 is the default.)
  * \return
  * \ns Sound
  */
 VMValue Sound_Play(int argCount, VMValue* args, Uint32 threadID) {
-    CHECK_ARGCOUNT(1);
-    ISound* audio = Scene::SoundList[GET_ARG(0, GetInteger)]->AsSound;
+    CHECK_AT_LEAST_ARGCOUNT(1);
+    ISound* audio = GET_ARG(0, GetSound);
     int channel = GET_ARG(0, GetInteger);
-    AudioManager::SetSound(channel % AudioManager::SoundArrayLength, audio);
+    float panning = GET_ARG_OPT(1, GetDecimal, 0.0f);
+    float speed = GET_ARG_OPT(2, GetDecimal, 1.0f);
+    float volume = GET_ARG_OPT(3, GetDecimal, 1.0f);
+    AudioManager::SetSound(channel % AudioManager::SoundArrayLength, audio, false, 0, panning, speed, volume);
     return NULL_VAL;
 }
 /***
@@ -5915,15 +6095,21 @@ VMValue Sound_Play(int argCount, VMValue* args, Uint32 threadID) {
  * \desc Plays a sound, looping back when it ends.
  * \param sound (Integer): The sound index to play.
  * \paramOpt loopPoint (Integer): Loop point in samples.
+ * \paramOpt panning (Decimal): Control the panning of the audio. -1.0 makes it sound in left ear only, 1.0 makes it sound in right ear, and closer to 0.0 centers it. (0.0 is the default.)
+ * \paramOpt speed (Decimal): Control the speed of the audio. > 1.0 makes it faster, < 1.0 is slower, 1.0 is normal speed. (1.0 is the default.)
+ * \paramOpt volume (Decimal): Controls the volume of the audio. 0.0 is muted, 1.0 is normal volume. (1.0 is the default.)
  * \return
  * \ns Sound
  */
 VMValue Sound_Loop(int argCount, VMValue* args, Uint32 threadID) {
     CHECK_AT_LEAST_ARGCOUNT(1);
-    ISound* audio = Scene::SoundList[GET_ARG(0, GetInteger)]->AsSound;
+    ISound* audio = GET_ARG(0, GetSound);
     int channel = GET_ARG(0, GetInteger);
-    int loopPoint = argCount >= 2 ? GET_ARG(0, GetInteger) : 0;
-    AudioManager::SetSound(channel % AudioManager::SoundArrayLength, audio, true, loopPoint);
+    int loopPoint = GET_ARG_OPT(1, GetInteger, 0);
+    float panning = GET_ARG_OPT(2, GetDecimal, 0.0f);
+    float speed = GET_ARG_OPT(3, GetDecimal, 1.0f);
+    float volume = GET_ARG_OPT(4, GetDecimal, 1.0f);
+    AudioManager::SetSound(channel % AudioManager::SoundArrayLength, audio, true, loopPoint, panning, speed, volume);
     return NULL_VAL;
 }
 /***
@@ -7855,6 +8041,8 @@ PUBLIC STATIC void StandardLibrary::Link() {
     DEF_NATIVE(Draw, SetTextureTarget);
     DEF_NATIVE(Draw, Clear);
     DEF_NATIVE(Draw, ResetTextureTarget);
+    DEF_NATIVE(Draw, UseSpriteDeform);
+    DEF_NATIVE(Draw, SetSpriteDeformLine);
 
     BytecodeObjectManager::GlobalConstInteger(NULL, "DrawMode_LINES", 0);
     BytecodeObjectManager::GlobalConstInteger(NULL, "DrawMode_POLYGONS", 1);
@@ -8018,13 +8206,17 @@ PUBLIC STATIC void StandardLibrary::Link() {
     // #region Music
     INIT_CLASS(Music);
     DEF_NATIVE(Music, Play);
+    DEF_NATIVE(Music, PlayAtTime);
     DEF_NATIVE(Music, Stop);
     DEF_NATIVE(Music, StopWithFadeOut);
     DEF_NATIVE(Music, Pause);
     DEF_NATIVE(Music, Resume);
     DEF_NATIVE(Music, Clear);
     DEF_NATIVE(Music, Loop);
+    DEF_NATIVE(Music, LoopAtTime);
     DEF_NATIVE(Music, IsPlaying);
+    DEF_NATIVE(Music, GetPosition);
+    DEF_NATIVE(Music, Alter);
     // #endregion
 
     // #region Number
@@ -8059,7 +8251,7 @@ PUBLIC STATIC void StandardLibrary::Link() {
     DEF_NATIVE(Resources, LoadSound);
     DEF_NATIVE(Resources, LoadVideo);
     DEF_NATIVE(Resources, FileExists);
-
+    DEF_NATIVE(Resources, ReadAllText);
     DEF_NATIVE(Resources, UnloadImage);
 
     BytecodeObjectManager::GlobalConstInteger(NULL, "SCOPE_SCENE", 0);
@@ -8090,6 +8282,8 @@ PUBLIC STATIC void StandardLibrary::Link() {
     DEF_NATIVE(Scene, SetLayerOffsetPosition);
     DEF_NATIVE(Scene, SetLayerDrawGroup);
     DEF_NATIVE(Scene, SetLayerDrawBehavior);
+    DEF_NATIVE(Scene, SetLayerBlend);
+    DEF_NATIVE(Scene, SetLayerOpacity);
     DEF_NATIVE(Scene, SetLayerScroll);
     DEF_NATIVE(Scene, SetLayerSetParallaxLinesBegin);
     DEF_NATIVE(Scene, SetLayerSetParallaxLines);
